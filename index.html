@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Google Drive File Lister</title>
+  <title>Google Drive Photo Slideshow</title>
   <meta charset="utf-8">
   <style>
     body {
@@ -16,28 +16,44 @@
       font-size: 16px;
       cursor: pointer;
     }
-    #file-list {
-      margin-top: 20px;
+    #fullscreen-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0,0,0,1);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .file-item {
-      padding: 8px;
-      border-bottom: 1px solid #eee;
-    }
-    .folder {
-      color: #4285f4;
-      font-weight: bold;
+    #fullscreen-image {
+      max-width: 100vw;
+      max-height: 100vh;
+      object-fit: contain;
+      cursor: zoom-out;
     }
   </style>
 </head>
 <body>
-  <h1>Google Drive Folder File Lister</h1>
+  <h1>Google Drive Folder Photo Slideshow</h1>
   
-  <button id="authorize-button" style="display: none;">Sign In with Google</button>
-  <button id="signout-button" style="display: none;">Sign Out</button>
-  <button id="folder-picker-button" style="display: none;">Select Folder</button>
+  <button id="authorize-button" style="display: none;">Sign in with Google</button>
+  <button id="signout-button" style="display: none;">Sign out</button>
+  <button id="folder-picker-button" style="display: none;">Select folder</button>
   
-  <div id="content"></div>
-  <div id="file-list"></div>
+  <div id="info"></div>
+
+  <!-- Slideshow lives here in normal mode -->
+  <div id="image-container">
+    <img id="normal-image" style="max-width: 200px; cursor: pointer; display: block;">
+  </div>
+
+  <!-- Fullscreen overlay lives here -->
+  <div id="fullscreen-overlay" style="display: none;">
+    <img id="fullscreen-image">
+  </div>
 
   <script type="text/javascript">
     // Replace with your own Client ID from Google Cloud Console
@@ -52,7 +68,12 @@
     let accessToken = null;
     let pickerInited = false;
 
-    // Load the GIS library
+    let files = [];
+    let currentIndex = 0;
+    let fullscreen = false;
+    let slideshowTimer;
+    let isSlideshowActive = false;
+
     function gapiLoaded() {
       gapi.load('client:picker', initializeGapiClient);
     }
@@ -91,7 +112,6 @@
         document.getElementById('signout-button').style.display = 'block';
         document.getElementById('authorize-button').style.display = 'none';
         document.getElementById('folder-picker-button').style.display = 'block';
-        document.getElementById('content').innerText = 'Signed in! Click "Select Folder" to choose a folder.';
       };
 
       if (gapi.client.getToken() === null) {
@@ -102,20 +122,24 @@
     }
 
     function handleSignoutClick() {
+      endSlideshow();
+      clearAccessToken();
+
+      document.getElementById('info').innerText = '';
+      document.getElementById('authorize-button').style.display = 'block';
+      document.getElementById('signout-button').style.display = 'none';
+      document.getElementById('folder-picker-button').style.display = 'none';
+    }
+
+    function clearAccessToken() {
       const token = gapi.client.getToken();
       if (token !== null) {
         google.accounts.oauth2.revoke(token.access_token);
         gapi.client.setToken('');
         accessToken = null;
-        document.getElementById('content').innerText = '';
-        document.getElementById('file-list').innerHTML = '';
-        document.getElementById('authorize-button').style.display = 'block';
-        document.getElementById('signout-button').style.display = 'none';
-        document.getElementById('folder-picker-button').style.display = 'none';
       }
     }
 
-    // Create and render a Picker object for selecting from Drive
     function createPicker() {
       const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
           .setSelectFolderEnabled(true);
@@ -130,52 +154,113 @@
       picker.setVisible(true);
     }
 
-    // Callback implementation for the picker
     async function pickerCallback(data) {
       if (data.action === google.picker.Action.PICKED) {
         const folderId = data.docs[0].id;
         const folderName = data.docs[0].name;
-        document.getElementById('content').innerText = `Selected folder: ${folderName}`;
-        await listFilesInFolder(folderId);
+        await showImages(folderId);
       }
     }
 
-    // List files in the selected folder
-    async function listFilesInFolder(folderId) {
-      try {
-        const response = await gapi.client.drive.files.list({
-          q: `'${folderId}' in parents and trashed=false`,
-          fields: 'files(id, name, mimeType, modifiedTime)',
-          orderBy: 'name',
-          pageSize: 100
-        });
+    async function showImages(folderId) {
+      await loadImageMetadata(folderId);      
+      startSlideshow();
+    }
 
-        const files = response.result.files;
-        const fileListDiv = document.getElementById('file-list');
-        
-        if (!files || files.length === 0) {
-          fileListDiv.innerHTML = '<p>No files found in this folder.</p>';
-          return;
+    async function loadImageMetadata(folderId) {
+      const response = await gapi.client.drive.files.list({
+        q: `'${folderId}' in parents and trashed=false`,
+        fields: 'files(id, name, mimeType)',
+        orderBy: 'name',
+        pageSize: 100
+      });
+
+      files = response.result.files.sort(() => Math.random() - .5);
+    }
+
+    async function startSlideshow(delay = 2000) {
+      if (!files || files.length === 0) {
+        const infoDiv = document.getElementById('info');
+        infoDiv.innerHTML = '<p>No files found in this folder.</p>';
+        return;
+      }
+
+      isSlideshowActive = true;
+      showCurrentImage();
+
+      slideshowTimer = setInterval(() => {
+        if (currentIndex < files.length - 1) {
+          currentIndex++;
+        } else {
+          currentIndex = 0;
         }
 
-        let html = '<h2>Files in folder:</h2>';
-        files.forEach(file => {
-          const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
-          const className = isFolder ? 'file-item folder' : 'file-item';
-          const icon = isFolder ? '📁' : '📄';
-          html += `<div class="${className}">${icon} ${file.name}</div>`;
-        });
-        
-        fileListDiv.innerHTML = html;
-      } catch (err) {
-        document.getElementById('file-list').innerHTML = `<p>Error: ${err.message}</p>`;
+        showCurrentImage();
+      }, delay);
+    }
+
+    function endSlideshow() {
+      isSlideshowActive = false;
+
+      if (slideshowTimer) {
+        clearInterval(slideshowTimer);
+        slideshowTimer = null;
       }
+
+      const img = getImageTag();
+      img.style.display = 'none';
+    }
+
+    async function showCurrentImage() {
+      const img = getImageTag();
+      const imageObjectUrl = await loadImage();
+
+      if (!isSlideshowActive) return;
+
+      img.src = imageObjectUrl
+      img.style.display = 'block';
+      img.onload = () => URL.revokeObjectURL(img.src);
+    }
+
+    function getImageTag() {
+      let target = 'normal-image'
+      if (fullscreen) { target = 'fullscreen-image' }
+      return document.getElementById(target);
+    }
+
+    async function loadImage() {
+      const file = files[currentIndex]
+
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const blob = await res.blob();
+
+      return URL.createObjectURL(blob)
+    }
+
+    async function imageSizeToggle() {
+      const overlay = document.getElementById('fullscreen-overlay');
+  
+      if (fullscreen) {
+        // Exit fullscreen
+        overlay.style.display = 'none';
+        fullscreen = false
+      } else {
+        // Enter fullscreen
+        overlay.style.display = 'flex';
+        fullscreen = true
+      }
+
+      showCurrentImage()
     }
 
     // Set up event listeners
     document.getElementById('authorize-button').addEventListener('click', handleAuthClick);
     document.getElementById('signout-button').addEventListener('click', handleSignoutClick);
     document.getElementById('folder-picker-button').addEventListener('click', createPicker);
+    document.getElementById('image-container').addEventListener('click', imageSizeToggle);
+    document.getElementById('fullscreen-overlay').addEventListener('click', imageSizeToggle);  
   </script>
   
   <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
