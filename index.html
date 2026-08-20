@@ -114,11 +114,7 @@
         document.getElementById('folder-picker-button').style.display = 'block';
       };
 
-      if (gapi.client.getToken() === null) {
-        tokenClient.requestAccessToken({prompt: 'consent'});
-      } else {
-        tokenClient.requestAccessToken({prompt: ''});
-      }
+      tokenClient.requestAccessToken({prompt: 'consent'});
     }
 
     function handleSignoutClick() {
